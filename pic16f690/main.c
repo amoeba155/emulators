@@ -5,6 +5,8 @@ https://ww1.microchip.com/downloads/aemDocuments/documents/OTH/ProductDocuments/
 
 35 instructions
 
+search "todo:"
+
 notes:
     sfr_trisa.write_mask
     (*data_memory[1][0x05].mirror).write_mask
@@ -17,22 +19,39 @@ notes:
 #include <stdbool.h>
 
 // shortcuts
-#define BITS_13 0b1111111111111;
-#define BITS_14 0b11111111111111;
+#define BIT_1   0b1
+#define BIT_2   0b10
+#define BIT_3   0b100
+#define BIT_4   0b1000
+#define BIT_5   0b10000
+#define BIT_8   0b10000000
+#define BIT_9   0b100000000
+
+#define BITS_7  0b1111111
+#define BITS_8  0b11111111
+#define BITS_13 0b1111111111111
+#define BITS_14 0b11111111111111
 
 // data memory
 #define DATA_MEM_BANKS 4
 #define DATA_MEM_ADDRS 0x80
 
+// instructions
+#define INSTRUCTIONS_COUNT 35
+
 uint16_t demo_1[4] = {
     0b11000000000101,
-    0b00000010011001,
-    0b00011100011001,
-    0b01000110011001,
+    0b00000010100001,
+    0b00011100100001,
+    0b01000100100001,
 };
-
+//todo: mirror program_memory
 uint16_t program_memory[0x1000] = {0}; // 0xFFF total
+uint16_t program_counter = 0x20;
+uint16_t instruction_register = 0;
 
+
+// register struct for EVERYTHING (w, ram, eeprom)
 typedef struct Register{
     uint8_t value;
     uint8_t write_mask;
@@ -40,11 +59,14 @@ typedef struct Register{
     struct Register *mirror;
 } Register;
 
+
+Register w = {.value = 0b00000000, .write_mask = 0b11111111, .read_mask = 0b11111111, .mirror = &w};
+
 // SFR values ; SFR write rules (unwritable/unimplemented bits)
 //--shared
 Register sfr_tmr0    = {.write_mask = 0b00000000, .read_mask = 0b11111111, .mirror = &sfr_tmr0};
 Register sfr_option  = {.value = 0b11111111, .write_mask = 0b11111111, .read_mask = 0b11111111, .mirror = &sfr_option};
-Register sfr_pcl     = {.value = 0b00000000, .write_mask = 0b00000000, .read_mask = 0b11111111, .mirror = &sfr_pcl};
+Register sfr_pcl     = {.value = 0b00000000, .write_mask = 0b11111111, .read_mask = 0b11111111, .mirror = &sfr_pcl}; //todo: exception when reading/writing to mirror = &program_counter
 Register sfr_status  = {.value = 0b00011000, .write_mask = 0b00011000, .read_mask = 0b11111111, .mirror = &sfr_status};
 Register sfr_fsr     = {.write_mask = 0b00000000, .read_mask = 0b11111111, .mirror = &sfr_fsr};
 Register sfr_porta   = {.write_mask = 0b00110111, .read_mask = 0b00111111, .mirror = &sfr_porta};
@@ -53,7 +75,7 @@ Register sfr_portc   = {.write_mask = 0b11111111, .read_mask = 0b11111111, .mirr
 Register sfr_trisa   = {.value = 0b00000000, .write_mask = 0b00110111, .read_mask = 0b00111111, .mirror = &sfr_trisa};
 Register sfr_trisb   = {.value = 0b00000000, .write_mask = 0b11110000, .read_mask = 0b11110000, .mirror = &sfr_trisb};
 Register sfr_trisc   = {.value = 0b00000000, .write_mask = 0b11110111, .read_mask = 0b11111111, .mirror = &sfr_trisc};
-Register sfr_pclath  = {.value = 0b00000000, .write_mask = 0b00011111, .read_mask = 0b00011111, .mirror = &sfr_pclath};
+Register sfr_pclath  = {.value = 0b00000000, .write_mask = 0b00011111, .read_mask = 0b00011111, .mirror = &sfr_pclath}; // see above
 Register sfr_intcon  = {.value = 0b00000000, .write_mask = 0b11111111, .read_mask = 0b11111111, .mirror = &sfr_intcon};
 Register sfr_indf    = {.mirror = &sfr_fsr}; // is first, but cant declare before fsr (for obvious reasons)
 //--bank0 exclusive
@@ -117,7 +139,281 @@ Register sfr_srcon   = {.value = 0b00000000, .write_mask = 0b11110000, .read_mas
 // unimplemented locations
 Register unimplemented = {.value = 0, .write_mask = 0, .read_mask = 0, .mirror = &unimplemented};
 
-Register data_memory[DATA_MEM_BANKS][DATA_MEM_ADDRS] = {0};
+Register data_memory[DATA_MEM_BANKS][DATA_MEM_ADDRS];
+
+
+// instruction handler
+typedef void (*InstructionHandler) (
+    Register* w,
+    uint16_t opcode
+);
+
+
+void instr_addwf(Register* w, uint16_t opcode) {
+    uint8_t file_address = opcode & BITS_7;
+    struct Register *file = &data_memory[(sfr_status.value & 0b01100000) >> 5][file_address];
+    while (file->mirror != file) {
+        file = file->mirror;
+    }
+
+    uint16_t result = (file->value & file->read_mask) + w->value;
+
+    // flags
+    // c
+    if (result & BIT_9) {
+        sfr_status.value = sfr_status.value | BIT_1;
+    }
+    // dc
+    if (((w->value | (file->value & file->read_mask)) & BIT_4 == BIT_4) && (result & BIT_5 == BIT_5)) {
+        sfr_status.value = sfr_status.value | BIT_2;
+    }
+    // z
+    if (!(result & BITS_8)) {
+        sfr_status.value = sfr_status.value | BIT_3;
+    }
+
+    // destination
+    if ((opcode & BIT_8) == BIT_8) { // store in f
+        file->value = (result & BITS_8) & file->write_mask;
+    } else { // store in w
+        w->value = (result & BITS_8);
+    }
+}
+
+
+void instr_andwf(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_clrf(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_clrw(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_comf(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_decf(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_decfsz(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_incf(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_incfsz(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_iorwf(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_movf(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_movwf(Register* w, uint16_t opcode) {
+    uint8_t file_address = opcode & BITS_7;
+    struct Register *file = &data_memory[(sfr_status.value & 0b01100000) >> 5][file_address];
+
+    while (file->mirror != file) {
+        file = file->mirror;
+    }
+
+    file->value = (w->value & file->write_mask);
+}
+
+
+void instr_nop(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_rlf(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_rrf(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_subwf(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_swapf(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_xorwf(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_bcf(Register* w, uint16_t opcode) {
+    uint8_t file_address = opcode & BITS_7;
+    uint8_t file_bit = (opcode & 0b1110000000) >> 7;
+    struct Register *file = &data_memory[(sfr_status.value & 0b01100000) >> 5][file_address];
+    while (file->mirror != file) {
+        file = file->mirror;
+    }
+
+    file->value = (file->value & file->write_mask) & ~(BIT_1 << file_bit);
+}
+
+
+void instr_bsf(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_btfsc(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_btfss(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_addlw(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_andlw(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_call(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_clrwdt(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_goto(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_iorlw(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_movlw(Register* w, uint16_t opcode) {
+    uint8_t literal = opcode & BITS_8;
+
+    w->value = literal;
+}
+
+
+void instr_retfie(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_retlw(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_return(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_sleep(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_sublw(Register* w, uint16_t opcode) {
+
+}
+
+
+void instr_xorlw(Register* w, uint16_t opcode) {
+
+}
+
+
+// instruction register
+typedef struct {
+    uint16_t mask;
+    uint16_t value;
+    InstructionHandler handler;
+} Instruction;
+
+Instruction instructions[INSTRUCTIONS_COUNT] = {
+    {0b11111100000000, 0b00011100000000, instr_addwf},
+    {0b11111100000000, 0b00010100000000, instr_andwf},
+    {0b11111110000000, 0b00000110000000, instr_clrf},
+    {0b11111100000000, 0b00000100000000, instr_clrw},
+    {0b11111100000000, 0b00100100000000, instr_comf},
+    {0b11111100000000, 0b00001100000000, instr_decf},
+    {0b11111100000000, 0b00101100000000, instr_decfsz},
+    {0b11111100000000, 0b00101000000000, instr_incf},
+    {0b11111100000000, 0b00111100000000, instr_incfsz},
+    {0b11111100000000, 0b00010000000000, instr_iorwf},
+    {0b11111100000000, 0b00100000000000, instr_movf},
+    {0b11111110000000, 0b00000010000000, instr_movwf},
+    {0b11111110011111, 0b00000000000000, instr_nop},
+    {0b11111100000000, 0b00110100000000, instr_rlf},
+    {0b11111100000000, 0b00110000000000, instr_rrf},
+    {0b11111100000000, 0b00001000000000, instr_subwf},
+    {0b11111100000000, 0b00111000000000, instr_swapf},
+    {0b11111100000000, 0b00011000000000, instr_xorwf},
+
+    {0b11110000000000, 0b01000000000000, instr_bcf},
+    {0b11110000000000, 0b01010000000000, instr_bsf},
+    {0b11110000000000, 0b01100000000000, instr_btfsc},
+    {0b11110000000000, 0b01110000000000, instr_btfss},
+
+    {0b11111000000000, 0b11111000000000, instr_addlw},
+    {0b11111100000000, 0b11100100000000, instr_andlw},
+    {0b11100000000000, 0b10000000000000, instr_call},
+    {0b11111111111111, 0b00000001100100, instr_clrwdt},
+    {0b11100000000000, 0b10100000000000, instr_goto},
+    {0b11111100000000, 0b11100000000000, instr_iorlw},
+    {0b11110000000000, 0b11000000000000, instr_movlw},
+    {0b11111111111111, 0b00000000001001, instr_retfie},
+    {0b11110000000000, 0b11010000000000, instr_retlw},
+    {0b11111111111111, 0b00000000001000, instr_return},
+    {0b11111111111111, 0b00000000110011, instr_sleep},
+    {0b11111000000000, 0b11110000000000, instr_sublw},
+    {0b11111100000000, 0b11101000000000, instr_xorlw},
+};
+
 
 void _init_data_mem() {
     // fill data_memory
@@ -126,15 +422,15 @@ void _init_data_mem() {
 
     // GPRs between 0x20 and 0x70
     for (int i = 0x20; i < 0x70; i++) {
-        data_memory[0][i].mirror = &data_memory[0][i];
-        data_memory[1][i].mirror = &data_memory[1][i];
-        data_memory[2][i].mirror = &data_memory[2][i];
+        data_memory[0][i].mirror = &data_memory[0][i]; data_memory[0][i].write_mask = 0b11111111; data_memory[0][i].read_mask = 0b11111111;
+        data_memory[1][i].mirror = &data_memory[1][i]; data_memory[1][i].write_mask = 0b11111111; data_memory[1][i].read_mask = 0b11111111;
+        data_memory[2][i].mirror = &data_memory[2][i]; data_memory[2][i].write_mask = 0b11111111; data_memory[2][i].read_mask = 0b11111111;
         data_memory[3][i].mirror = &unimplemented;
     }
 
     // final GPRs in bank0 and mirrors for other 3 banks to bank 0
     for (int i = 0x70; i < 0x80; i++) {
-        data_memory[0][i].mirror = &data_memory[0][i];
+        data_memory[0][i].mirror = &data_memory[0][i]; data_memory[0][i].write_mask = 0b11111111; data_memory[0][i].read_mask = 0b11111111;
         data_memory[1][i].mirror = &data_memory[0][i];
         data_memory[2][i].mirror = &data_memory[0][i];
         data_memory[3][i].mirror = &data_memory[0][i];
@@ -250,19 +546,41 @@ void _init_data_mem() {
     data_memory[3][0x1F].mirror = &unimplemented;
 }
 
-int write8(uint8_t addr, uint8_t data) {
-    return 0;
+
+void instruction_decode() {
+    for (int i = 0; i < INSTRUCTIONS_COUNT; i++) {
+        if ((instruction_register & instructions[i].mask) == instructions[i].value) {
+            instructions[i].handler(&w, instruction_register);
+            break;
+        }
+    }
 }
+
 
 void setup() {
     _init_data_mem();
     
     for (int i = 0; i < 4; i++) {
-        program_memory[i + 5] = demo_1[i];
+        program_memory[i + 0x20] = demo_1[i];
     }
 }
 
+
+void loop() {
+    for (int i = 0; i < 4; i++) {
+        // load instruction todo: retlw and other exceptions to do with stack
+        instruction_register = program_memory[program_counter];
+        instruction_decode();
+
+        printf("Intruction %d\nW value: %b\n0x21 Register value: %b\n\n", i, w.value, data_memory[0][0x21].value);
+        // increment pc
+        program_counter += 1;
+    }
+}
+
+
 int main() {
     setup();
+    loop();
     return 0;
 }
