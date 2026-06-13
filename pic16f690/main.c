@@ -27,6 +27,7 @@ notes:
 #define BIT_8   0b10000000
 #define BIT_9   0b100000000
 
+#define BITS_4  0b1111
 #define BITS_7  0b1111111
 #define BITS_8  0b11111111
 #define BITS_13 0b1111111111111
@@ -40,7 +41,7 @@ notes:
 #define INSTRUCTIONS_COUNT 35
 
 uint16_t demo_1[4] = {
-    0b11000000000101,
+    0b11000011111111,
     0b00000010100001,
     0b00011100100001,
     0b01000100100001,
@@ -164,11 +165,11 @@ void instr_addwf(Register* w, uint16_t opcode) {
         sfr_status.value = sfr_status.value | BIT_1;
     }
     // dc
-    if (((w->value | (file->value & file->read_mask)) & BIT_4 == BIT_4) && (result & BIT_5 == BIT_5)) {
+    if ((((w->value & BITS_4) + (file->value & BITS_4)) & BIT_5) == BIT_5) {
         sfr_status.value = sfr_status.value | BIT_2;
     }
     // z
-    if (!(result & BITS_8)) {
+    if ((result & BITS_8) == 0) {
         sfr_status.value = sfr_status.value | BIT_3;
     }
 
@@ -572,7 +573,7 @@ void loop() {
         instruction_register = program_memory[program_counter];
         instruction_decode();
 
-        printf("Intruction %d\nW value: %b\n0x21 Register value: %b\n\n", i, w.value, data_memory[0][0x21].value);
+        printf("Intruction %d\nW value: %b\n0x21 Register value: %b\nStatus: %b\n\n", i, w.value, data_memory[0][0x21].value, sfr_status.value);
         // increment pc
         program_counter += 1;
     }
