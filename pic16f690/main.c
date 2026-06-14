@@ -46,6 +46,7 @@ uint16_t demo_1[4] = {
     0b00011100100001,
     0b01000100100001,
 };
+
 //todo: mirror program_memory
 uint16_t program_memory[0x1000] = {0}; // 0xFFF total
 uint16_t program_counter = 0x20;
@@ -183,52 +184,180 @@ void instr_addwf(Register* w, uint16_t opcode) {
 
 
 void instr_andwf(Register* w, uint16_t opcode) {
+    uint8_t file_address = opcode & BITS_7;
+    struct Register *file = &data_memory[(sfr_status.value & 0b01100000) >> 5][file_address];
+    while (file->mirror != file) {
+        file = file->mirror;
+    }
 
+    uint16_t result = (file->value & file->read_mask) & w->value;
+
+    // flags
+    // z
+    if ((result & BITS_8) == 0) {
+        sfr_status.value = sfr_status.value | BIT_3;
+    }
+
+    // destination
+    if ((opcode & BIT_8) == BIT_8) { // store in f
+        file->value = (result & BITS_8) & file->write_mask;
+    } else { // store in w
+        w->value = (result & BITS_8);
+    }
 }
 
 
 void instr_clrf(Register* w, uint16_t opcode) {
+    uint8_t file_address = opcode & BITS_7;
+    struct Register *file = &data_memory[(sfr_status.value & 0b01100000) >> 5][file_address];
+    while (file->mirror != file) {
+        file = file->mirror;
+    }
 
+    file->value = 0b0 + file->write_mask;
+
+    // flags
+    // z
+    sfr_status.value = sfr_status.value | BIT_3;
 }
 
 
 void instr_clrw(Register* w, uint16_t opcode) {
+    w->value = 0b0;
 
+    // flags
+    // z
+    sfr_status.value = sfr_status.value | BIT_3;
 }
 
 
 void instr_comf(Register* w, uint16_t opcode) {
+    uint8_t file_address = opcode & BITS_7;
+    struct Register *file = &data_memory[(sfr_status.value & 0b01100000) >> 5][file_address];
+    while (file->mirror != file) {
+        file = file->mirror;
+    }
 
+    uint16_t result = ~(file->value);
+
+    // flags
+    // z
+    if ((result & BITS_8) == 0) {
+        sfr_status.value = sfr_status.value | BIT_3;
+    }
+
+    // destination
+    if ((opcode & BIT_8) == BIT_8) { // store in f
+        file->value = (result & BITS_8) & file->write_mask;
+    } else { // store in w
+        w->value = (result & BITS_8);
+    }
 }
 
 
 void instr_decf(Register* w, uint16_t opcode) {
+    uint8_t file_address = opcode & BITS_7;
+    struct Register *file = &data_memory[(sfr_status.value & 0b01100000) >> 5][file_address];
+    while (file->mirror != file) {
+        file = file->mirror;
+    }
 
+    uint16_t result = file->value - 1;
+
+    // flags
+    // z
+    if ((result & BITS_8) == 0) {
+        sfr_status.value = sfr_status.value | BIT_3;
+    }
+
+    // destination
+    if ((opcode & BIT_8) == BIT_8) { // store in f
+        file->value = (result & BITS_8) & file->write_mask;
+    } else { // store in w
+        w->value = (result & BITS_8);
+    }
 }
 
 
-void instr_decfsz(Register* w, uint16_t opcode) {
+void instr_decfsz(Register* w, uint16_t opcode) { // skip
 
 }
 
 
 void instr_incf(Register* w, uint16_t opcode) {
+    uint8_t file_address = opcode & BITS_7;
+    struct Register *file = &data_memory[(sfr_status.value & 0b01100000) >> 5][file_address];
+    while (file->mirror != file) {
+        file = file->mirror;
+    }
 
+    uint16_t result = file->value + 1;
+
+    // flags
+    // z
+    if ((result & BITS_8) == 0) {
+        sfr_status.value = sfr_status.value | BIT_3;
+    }
+
+    // destination
+    if ((opcode & BIT_8) == BIT_8) { // store in f
+        file->value = (result & BITS_8) & file->write_mask;
+    } else { // store in w
+        w->value = (result & BITS_8);
+    }
 }
 
 
-void instr_incfsz(Register* w, uint16_t opcode) {
+void instr_incfsz(Register* w, uint16_t opcode) { // skip
 
 }
 
 
 void instr_iorwf(Register* w, uint16_t opcode) {
+    uint8_t file_address = opcode & BITS_7;
+    struct Register *file = &data_memory[(sfr_status.value & 0b01100000) >> 5][file_address];
+    while (file->mirror != file) {
+        file = file->mirror;
+    }
 
+    uint16_t result = file->value | w->value;
+
+    // flags
+    // z
+    if ((result & BITS_8) == 0) {
+        sfr_status.value = sfr_status.value | BIT_3;
+    }
+
+    // destination
+    if ((opcode & BIT_8) == BIT_8) { // store in f
+        file->value = (result & BITS_8) & file->write_mask;
+    } else { // store in w
+        w->value = (result & BITS_8);
+    }
 }
 
 
 void instr_movf(Register* w, uint16_t opcode) {
+    uint8_t file_address = opcode & BITS_7;
+    struct Register *file = &data_memory[(sfr_status.value & 0b01100000) >> 5][file_address];
+    while (file->mirror != file) {
+        file = file->mirror;
+    }
 
+    uint16_t result = file->value;
+
+    // flags
+    // z
+    if ((result & BITS_8) == 0) {
+        sfr_status.value = sfr_status.value | BIT_3;
+    }
+
+    // destination
+    if ((opcode & BIT_8) == BIT_8) { // store in f
+        file->value = (result & BITS_8) & file->write_mask;
+    } else { // store in w
+        w->value = (result & BITS_8);
+    }
 }
 
 
@@ -245,32 +374,128 @@ void instr_movwf(Register* w, uint16_t opcode) {
 
 
 void instr_nop(Register* w, uint16_t opcode) {
-
+    // nothing!
 }
 
 
 void instr_rlf(Register* w, uint16_t opcode) {
+    uint8_t file_address = opcode & BITS_7;
+    struct Register *file = &data_memory[(sfr_status.value & 0b01100000) >> 5][file_address];
+    while (file->mirror != file) {
+        file = file->mirror;
+    }
 
+    uint16_t result = file->value << 1;
+
+    // flags
+    // c
+    result += sfr_status.value & BIT_1;
+    sfr_status.value = sfr_status.value | BIT_3;
+
+    // destination
+    if ((opcode & BIT_8) == BIT_8) { // store in f
+        file->value = (result & BITS_8) & file->write_mask;
+    } else { // store in w
+        w->value = (result & BITS_8);
+    }
 }
 
 
 void instr_rrf(Register* w, uint16_t opcode) {
+    uint8_t file_address = opcode & BITS_7;
+    struct Register *file = &data_memory[(sfr_status.value & 0b01100000) >> 5][file_address];
+    while (file->mirror != file) {
+        file = file->mirror;
+    }
 
+    uint16_t result = file->value + ((sfr_status.value & BIT_1) << 8);
+
+    // flags
+    // c
+    sfr_status.value = (sfr_status.value & (BITS_7 << 1)) + (result & BIT_1);
+
+    result = result >> 1;
+
+    // destination
+    if ((opcode & BIT_8) == BIT_8) { // store in f
+        file->value = (result & BITS_8) & file->write_mask;
+    } else { // store in w
+        w->value = (result & BITS_8);
+    }
 }
 
 
 void instr_subwf(Register* w, uint16_t opcode) {
+    uint8_t file_address = opcode & BITS_7;
+    struct Register *file = &data_memory[(sfr_status.value & 0b01100000) >> 5][file_address];
+    while (file->mirror != file) {
+        file = file->mirror;
+    }
 
+    uint16_t result = (file->value & file->read_mask) + (~(w->value) + 1);
+
+    // flags
+    // c
+    if ((result & BIT_9) == BIT_9) {
+        sfr_status.value = sfr_status.value | BIT_1;
+    }
+    // dc
+    if (((((file->value & file->read_mask) & BITS_4) + ~((w->value & BITS_4) + 1)) & BIT_5) == BIT_5) {
+        sfr_status.value = sfr_status.value | BIT_2;
+    }
+    // z
+    if ((result & BITS_8) == 0) {
+        sfr_status.value = sfr_status.value | BIT_3;
+    }
+
+    // destination
+    if ((opcode & BIT_8) == BIT_8) { // store in f
+        file->value = (result & BITS_8) & file->write_mask;
+    } else { // store in w
+        w->value = (result & BITS_8);
+    }
 }
 
 
 void instr_swapf(Register* w, uint16_t opcode) {
+    uint8_t file_address = opcode & BITS_7;
+    struct Register *file = &data_memory[(sfr_status.value & 0b01100000) >> 5][file_address];
+    while (file->mirror != file) {
+        file = file->mirror;
+    }
 
+    uint16_t result = (((file->value & file->read_mask) & BITS_4) << 4) | (((file->value & file->read_mask) >> 4) & BITS_4);
+
+    // destination
+    if ((opcode & BIT_8) == BIT_8) { // store in f
+        file->value = (result & BITS_8) & file->write_mask;
+    } else { // store in w
+        w->value = (result & BITS_8);
+    }
 }
 
 
 void instr_xorwf(Register* w, uint16_t opcode) {
+    uint8_t file_address = opcode & BITS_7;
+    struct Register *file = &data_memory[(sfr_status.value & 0b01100000) >> 5][file_address];
+    while (file->mirror != file) {
+        file = file->mirror;
+    }
 
+    uint16_t result = (file->value & file->read_mask) ^ w->value;
+
+    // flags
+    // z
+    if ((result & BITS_8) == 0) {
+        sfr_status.value = sfr_status.value | BIT_3;
+    }
+
+    // destination
+    if ((opcode & BIT_8) == BIT_8) { // store in f
+        file->value = (result & BITS_8) & file->write_mask;
+    } else { // store in w
+        w->value = (result & BITS_8);
+    }
 }
 
 
@@ -287,27 +512,84 @@ void instr_bcf(Register* w, uint16_t opcode) {
 
 
 void instr_bsf(Register* w, uint16_t opcode) {
+    uint8_t file_address = opcode & BITS_7;
+    uint8_t file_bit = (opcode & 0b1110000000) >> 7;
+    struct Register *file = &data_memory[(sfr_status.value & 0b01100000) >> 5][file_address];
+    while (file->mirror != file) {
+        file = file->mirror;
+    }
 
+    file->value = (file->value & file->write_mask) | (BIT_1 << file_bit);
 }
 
 
-void instr_btfsc(Register* w, uint16_t opcode) {
+void instr_btfsc(Register* w, uint16_t opcode) { // skip
+    uint8_t file_address = opcode & BITS_7;
+    uint8_t file_bit = (opcode & 0b1110000000) >> 7;
+    struct Register *file = &data_memory[(sfr_status.value & 0b01100000) >> 5][file_address];
+    while (file->mirror != file) {
+        file = file->mirror;
+    }
 
+    if (((BIT_1 << file_bit) & (file->value & file->read_mask)) == (BIT_1 << file_bit)) { // set
+        // nothing
+    } else { // clear
+        // skip
+    }
 }
 
 
-void instr_btfss(Register* w, uint16_t opcode) {
+void instr_btfss(Register* w, uint16_t opcode) { // skip
+    uint8_t file_address = opcode & BITS_7;
+    uint8_t file_bit = (opcode & 0b1110000000) >> 7;
+    struct Register *file = &data_memory[(sfr_status.value & 0b01100000) >> 5][file_address];
+    while (file->mirror != file) {
+        file = file->mirror;
+    }
 
+    if (((BIT_1 << file_bit) & (file->value & file->read_mask)) == (BIT_1 << file_bit)) { // set
+        // skip
+    } else { // clear
+        // nothing
+    }
 }
 
 
 void instr_addlw(Register* w, uint16_t opcode) {
+    uint8_t literal = opcode & BITS_8;
 
+    uint16_t result = literal + w->value;
+
+    // flags
+    // c
+    if (result & BIT_9) {
+        sfr_status.value = sfr_status.value | BIT_1;
+    }
+    // dc
+    if ((((w->value & BITS_4) + (literal & BITS_4)) & BIT_5) == BIT_5) {
+        sfr_status.value = sfr_status.value | BIT_2;
+    }
+    // z
+    if ((result & BITS_8) == 0) {
+        sfr_status.value = sfr_status.value | BIT_3;
+    }
+
+    w->value = result & BITS_8;
 }
 
 
 void instr_andlw(Register* w, uint16_t opcode) {
+    uint8_t literal = opcode & BITS_8;
 
+    uint16_t result = literal & w->value;
+
+    // flags
+    // z
+    if ((result & BITS_8) == 0) {
+        sfr_status.value = sfr_status.value | BIT_3;
+    }
+
+    w->value = result & BITS_8;
 }
 
 
@@ -327,7 +609,17 @@ void instr_goto(Register* w, uint16_t opcode) {
 
 
 void instr_iorlw(Register* w, uint16_t opcode) {
+    uint8_t literal = opcode & BITS_8;
 
+    uint16_t result = literal | w->value;
+
+    // flags
+    // z
+    if ((result & BITS_8) == 0) {
+        sfr_status.value = sfr_status.value | BIT_3;
+    }
+
+    w->value = result & BITS_8;
 }
 
 
@@ -359,12 +651,40 @@ void instr_sleep(Register* w, uint16_t opcode) {
 
 
 void instr_sublw(Register* w, uint16_t opcode) {
+    uint8_t literal = opcode & BITS_8;
 
+    uint16_t result = literal + (~(w->value) + 1);
+
+    // flags
+    // c
+    if ((result & BIT_9) == BIT_9) {
+        sfr_status.value = sfr_status.value | BIT_1;
+    }
+    // dc
+    if ((((literal & BITS_4) + ~((w->value & BITS_4) + 1)) & BIT_5) == BIT_5) {
+        sfr_status.value = sfr_status.value | BIT_2;
+    }
+    // z
+    if ((result & BITS_8) == 0) {
+        sfr_status.value = sfr_status.value | BIT_3;
+    }
+
+    w->value = result & BITS_8;
 }
 
 
 void instr_xorlw(Register* w, uint16_t opcode) {
+    uint8_t literal = opcode & BITS_8;
 
+    uint16_t result = literal ^ w->value;
+
+    // flags
+    // z
+    if ((result & BITS_8) == 0) {
+        sfr_status.value = sfr_status.value | BIT_3;
+    }
+
+    w->value = result & BITS_8;
 }
 
 
