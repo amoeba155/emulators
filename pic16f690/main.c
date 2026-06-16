@@ -7,16 +7,23 @@ https://ww1.microchip.com/downloads/aemDocuments/documents/OTH/ProductDocuments/
 
 search "todo:"
 
+If the STATUS
+register is the destination for an instruction that affects
+the Z, DC or C bits, then the write to these three bits is
+disabled.
+
 notes:
     sfr_trisa.write_mask
     (*data_memory[1][0x05].mirror).write_mask
     ^- equivalent, allows for literal address read/writes in data_memory
 
+    pc stack is linked list, top is referenced by sktptr
+
 */
 
 #include <stdint.h>
 #include <stdio.h>
-#include <stdbool.h>
+#include <stdlib.h>
 
 // shortcuts
 #define BIT_1   0b1
@@ -30,6 +37,7 @@ notes:
 #define BITS_4  0b1111
 #define BITS_7  0b1111111
 #define BITS_8  0b11111111
+#define BITS_11 0b11111111111
 #define BITS_13 0b1111111111111
 #define BITS_14 0b11111111111111
 
@@ -40,17 +48,76 @@ notes:
 // instructions
 #define INSTRUCTIONS_COUNT 35
 
+// external flags
+uint8_t flag_two_cycle = 0b00; // two bits
+
 uint16_t demo_1[4] = {
-    0b11000011111111,
-    0b00000010100001,
-    0b00011100100001,
-    0b01000100100001,
+0b11000011000011,
+0b00000010100001,
+0b00110010100001,
+0b00110110100001,
 };
 
 //todo: mirror program_memory
 uint16_t program_memory[0x1000] = {0}; // 0xFFF total
 uint16_t program_counter = 0x20;
 uint16_t instruction_register = 0;
+
+
+typedef struct Stack {
+    uint16_t value;
+    struct Stack *next;
+} Stack;
+
+
+Stack *stkptr = NULL;
+
+
+void push_pc_stack(Stack **head, uint16_t value) {
+    Stack *node = malloc(sizeof(Stack));
+
+    node->value = value;
+    node->next = *head;
+
+    *head = node;
+
+    // remove 9th node from stack (if exists)
+    node = *head;
+    int count = 0;
+    while (node != NULL) {
+        if (count == 7) {
+            Stack *curr = node->next;
+            node->next = NULL;
+
+            while (curr != NULL) {
+                Stack *next = curr->next;
+                free(curr);
+                curr = next;
+            }
+
+            break;
+        }
+
+        node = node->next;
+        count++;
+    }
+}
+
+
+uint16_t pop_pc_stack(Stack **head) {
+    if (*head == NULL) {
+        // underflow
+        return 0;
+    }
+
+    Stack *node = *head;
+    uint16_t pc_value = node->value;
+
+    *head = node->next;
+
+    free(node);
+    return pc_value;
+}
 
 
 // register struct for EVERYTHING (w, ram, eeprom)
@@ -190,7 +257,7 @@ void instr_andwf(Register* w, uint16_t opcode) {
         file = file->mirror;
     }
 
-    uint16_t result = (file->value & file->read_mask) & w->value;
+    uint16_t result = (file->value & file->read_mask) & (w->value);
 
     // flags
     // z
@@ -214,7 +281,7 @@ void instr_clrf(Register* w, uint16_t opcode) {
         file = file->mirror;
     }
 
-    file->value = 0b0 + file->write_mask;
+    file->value = ~(BITS_8 & file->write_mask);
 
     // flags
     // z
@@ -280,7 +347,26 @@ void instr_decf(Register* w, uint16_t opcode) {
 
 
 void instr_decfsz(Register* w, uint16_t opcode) { // skip
+    uint8_t file_address = opcode & BITS_7;
+    struct Register *file = &data_memory[(sfr_status.value & 0b01100000) >> 5][file_address];
+    while (file->mirror != file) {
+        file = file->mirror;
+    }
 
+    uint16_t result = file->value - 1;
+
+    // flags
+    // external 2cycle flag
+    if ((result & BITS_8) == 0) {
+        flag_two_cycle = 0b11;
+    }
+
+    // destination
+    if ((opcode & BIT_8) == BIT_8) { // store in f
+        file->value = (result & BITS_8) & file->write_mask;
+    } else { // store in w
+        w->value = (result & BITS_8);
+    }
 }
 
 
@@ -309,7 +395,26 @@ void instr_incf(Register* w, uint16_t opcode) {
 
 
 void instr_incfsz(Register* w, uint16_t opcode) { // skip
+    uint8_t file_address = opcode & BITS_7;
+    struct Register *file = &data_memory[(sfr_status.value & 0b01100000) >> 5][file_address];
+    while (file->mirror != file) {
+        file = file->mirror;
+    }
 
+    uint16_t result = file->value + 1;
+
+    // flags
+    // internal 2cycle flag
+    if ((result & BITS_8) == 0) {
+        flag_two_cycle = 0b11;
+    }
+
+    // destination
+    if ((opcode & BIT_8) == BIT_8) { // store in f
+        file->value = (result & BITS_8) & file->write_mask;
+    } else { // store in w
+        w->value = (result & BITS_8);
+    }
 }
 
 
@@ -385,12 +490,11 @@ void instr_rlf(Register* w, uint16_t opcode) {
         file = file->mirror;
     }
 
-    uint16_t result = file->value << 1;
+    uint16_t result = ((file->value & file->read_mask) << 1) + (sfr_status.value & BIT_1);
 
     // flags
     // c
-    result += sfr_status.value & BIT_1;
-    sfr_status.value = sfr_status.value | BIT_3;
+    sfr_status.value = (sfr_status.value & (BITS_7 << 1)) + (result & BIT_9);
 
     // destination
     if ((opcode & BIT_8) == BIT_8) { // store in f
@@ -535,6 +639,7 @@ void instr_btfsc(Register* w, uint16_t opcode) { // skip
         // nothing
     } else { // clear
         // skip
+        flag_two_cycle = 0b11;
     }
 }
 
@@ -549,6 +654,7 @@ void instr_btfss(Register* w, uint16_t opcode) { // skip
 
     if (((BIT_1 << file_bit) & (file->value & file->read_mask)) == (BIT_1 << file_bit)) { // set
         // skip
+        flag_two_cycle = 0b11;
     } else { // clear
         // nothing
     }
@@ -594,7 +700,15 @@ void instr_andlw(Register* w, uint16_t opcode) {
 
 
 void instr_call(Register* w, uint16_t opcode) {
+    push_pc_stack(&stkptr, program_counter + 1);
 
+    uint16_t subroutine_destination = opcode & BITS_11;
+
+    subroutine_destination = subroutine_destination | ((sfr_pcl.value & sfr_pcl.read_mask) & (BIT_4 | BIT_5));
+
+    program_counter = subroutine_destination & BITS_13;
+
+    flag_two_cycle = 0b01;
 }
 
 
@@ -604,7 +718,11 @@ void instr_clrwdt(Register* w, uint16_t opcode) {
 
 
 void instr_goto(Register* w, uint16_t opcode) {
+    uint16_t literal = opcode & BITS_11;
 
+    program_counter = literal & ((sfr_pclath.value & sfr_pclath.read_mask) & (BIT_4 | BIT_5));
+
+    flag_two_cycle = 1;
 }
 
 
@@ -631,17 +749,32 @@ void instr_movlw(Register* w, uint16_t opcode) {
 
 
 void instr_retfie(Register* w, uint16_t opcode) {
+    uint16_t return_vector = pop_pc_stack(&stkptr);
 
+    program_counter = return_vector & BITS_13;
+    sfr_intcon.value = sfr_intcon.value | BIT_8;
+
+    flag_two_cycle = 0b01;
 }
 
 
 void instr_retlw(Register* w, uint16_t opcode) {
+    uint16_t return_vector = pop_pc_stack(&stkptr);
+    uint8_t literal = opcode & BITS_8;
 
+    program_counter = return_vector & BITS_13;
+    w->value = literal;
+
+    flag_two_cycle = 0b01;
 }
 
 
 void instr_return(Register* w, uint16_t opcode) {
+    uint16_t return_vector = pop_pc_stack(&stkptr);
 
+    program_counter = return_vector & BITS_13;
+
+    flag_two_cycle = 0b01;
 }
 
 
@@ -878,6 +1011,13 @@ void instruction_decode() {
 }
 
 
+// modules
+//--timer0
+void module_timer0() {
+
+}
+
+
 void setup() {
     _init_data_mem();
     
@@ -889,13 +1029,22 @@ void setup() {
 
 void loop() {
     for (int i = 0; i < 4; i++) {
-        // load instruction todo: retlw and other exceptions to do with stack
-        instruction_register = program_memory[program_counter];
-        instruction_decode();
+        if (flag_two_cycle) { // previous instruction is two-cycle, skip incrementing pc
+            // instrs nopping next instruction
+            // decfsz, incfsz, btfsc, btfss
+            if (flag_two_cycle & BIT_2) {
+                program_counter++;
+            }
+            flag_two_cycle = 0b00;
+        } else {
+            // load instruction todo: retlw and other exceptions to do with stack
+            instruction_register = program_memory[program_counter];
+            instruction_decode();
 
+            // increment pc
+            program_counter += 1;
+        }
         printf("Intruction %d\nW value: %b\n0x21 Register value: %b\nStatus: %b\n\n", i, w.value, data_memory[0][0x21].value, sfr_status.value);
-        // increment pc
-        program_counter += 1;
     }
 }
 
