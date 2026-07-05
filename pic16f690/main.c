@@ -12,6 +12,9 @@ register is the destination for an instruction that affects
 the Z, DC or C bits, then the write to these three bits is
 disabled.
 
+When the prescaler is assigned to WDT, a CLRWDT
+instruction will clear the prescaler along with the WDT
+
 notes:
     sfr_trisa.write_mask
     (*data_memory[1][0x05].mirror).write_mask
@@ -19,11 +22,14 @@ notes:
 
     pc stack is linked list, top is referenced by sktptr
 
+    might want to implement quarters of cycles? for interrupt sampling etc.
+
 */
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 // shortcuts
 #define BIT_1   0b1
@@ -31,6 +37,8 @@ notes:
 #define BIT_3   0b100
 #define BIT_4   0b1000
 #define BIT_5   0b10000
+#define BIT_6   0b100000
+#define BIT_7   0b1000000
 #define BIT_8   0b10000000
 #define BIT_9   0b100000000
 
@@ -49,13 +57,13 @@ notes:
 #define INSTRUCTIONS_COUNT 35
 
 // external flags
-uint8_t flag_two_cycle = 0b00; // two bits
+uint8_t flag_two_cycle = 0b00; // two bits, second for instrs that skip next (conditional)
 
 uint16_t demo_1[4] = {
 0b11000011000011,
 0b00000010100001,
-0b00110010100001,
-0b00110110100001,
+0b11000010110010,
+0b00011010100001,
 };
 
 //todo: mirror program_memory
@@ -540,11 +548,11 @@ void instr_subwf(Register* w, uint16_t opcode) {
 
     // flags
     // c
-    if ((result & BIT_9) == BIT_9) {
+    if (w->value <= (file->value & file->read_mask)) {
         sfr_status.value = sfr_status.value | BIT_1;
     }
     // dc
-    if (((((file->value & file->read_mask) & BITS_4) + ~((w->value & BITS_4) + 1)) & BIT_5) == BIT_5) {
+    if ((w->value & BITS_4) <= ((file->value & file->read_mask) & BITS_4)) {
         sfr_status.value = sfr_status.value | BIT_2;
     }
     // z
@@ -828,6 +836,7 @@ typedef struct {
     InstructionHandler handler;
 } Instruction;
 
+// instruction decoding 
 Instruction instructions[INSTRUCTIONS_COUNT] = {
     {0b11111100000000, 0b00011100000000, instr_addwf},
     {0b11111100000000, 0b00010100000000, instr_andwf},
@@ -869,6 +878,16 @@ Instruction instructions[INSTRUCTIONS_COUNT] = {
 };
 
 
+void instruction_decode() {
+    for (int i = 0; i < INSTRUCTIONS_COUNT; i++) {
+        if ((instruction_register & instructions[i].mask) == instructions[i].value) {
+            instructions[i].handler(&w, instruction_register);
+            break;
+        }
+    }
+}
+
+// helper functions
 void _init_data_mem() {
     // fill data_memory
     // GPRs treated as their own register, and mirror points to themselves (other than exceptions in banks 1,2,3)
@@ -890,7 +909,7 @@ void _init_data_mem() {
         data_memory[3][i].mirror = &data_memory[0][i];
     }
 
-    // 0x0 -> 0x1F for each bank
+    // 0x0 -> 0x1F for each bank, mirror sfr_x variables
     //--shared
     for (int i = 0; i < 4; i++) {
         data_memory[i][0x00].mirror = &sfr_indf;
@@ -1001,20 +1020,58 @@ void _init_data_mem() {
 }
 
 
-void instruction_decode() {
-    for (int i = 0; i < INSTRUCTIONS_COUNT; i++) {
-        if ((instruction_register & instructions[i].mask) == instructions[i].value) {
-            instructions[i].handler(&w, instruction_register);
-            break;
-        }
+// modules
+//--timer0
+typedef struct Timer0 {
+    uint8_t value;
+    uint8_t cooldown; // increment cooldown after sfr_tmr0 is written to
+} Timer0;
+
+struct Timer0 timer0 = {.value = 0, .cooldown = 0};
+
+void module_timer0() {
+    if (timer0.value == BITS_8) {
+        // will overflow, set T0IF
+        sfr_intcon.value = sfr_intcon.value | BIT_3;
     }
+
+    // increment
+    timer0.value++;
 }
 
 
-// modules
-//--timer0
-void module_timer0() {
+// interrupts
+// intcon, pie1/2, pir1/2
+// Figure 14-7
+// Figure 14-8
+void check_interrupts() {
+    // Figure 14-7
+    // INTCON: GIE PEIE T0IE INTE RABIE T0IF INTF RABIF(1)
+    // ioc condenses to RABIF in INTCON
+    uint8_t ioc_interrupts = (sfr_ioca.value & sfr_porta.value) | (sfr_iocb.value & sfr_portb.value);
+    if (ioc_interrupts & (sfr_intcon.value & BIT_4)) {
+        sfr_intcon.value = sfr_intcon.value | BIT_1;
+    }
 
+    // peripheral interrupts set their own flags, so can condense to pseudo-PIEF value
+    bool peripheral_interrupts = (sfr_pie1.value & sfr_pir1.value) | (sfr_pie2.value & sfr_pir2.value);
+
+    bool intcon_interrupts = ((sfr_intcon.value & (BIT_1 + BIT_2 + BIT_3)) << 3) & (sfr_intcon.value & (BIT_4 + BIT_5 + BIT_6));
+    
+    bool interrupt = intcon_interrupts | (peripheral_interrupts & (sfr_intcon.value & BIT_7));
+
+    // wake from sleep (dont need GIE enabled)
+    if (interrupt) {
+        //
+    }
+
+    // interrupt to cpu
+    if (interrupt & (sfr_intcon.value & BIT_8)) {
+        sfr_intcon.value = sfr_intcon.value & BITS_7; // clear GIE
+        push_pc_stack(&stkptr, program_counter); // push PC to stack
+        program_counter = 0x04; // interrupt vector
+    }
+    // user program should handle returning, and checking interrupt source
 }
 
 
@@ -1037,14 +1094,21 @@ void loop() {
             }
             flag_two_cycle = 0b00;
         } else {
+            // check interrupt (end of previous instruction)
+            if (i) {
+                _interrupt_handler();
+            }
+
+            // next instruction
+
             // load instruction todo: retlw and other exceptions to do with stack
             instruction_register = program_memory[program_counter];
             instruction_decode();
 
             // increment pc
-            program_counter += 1;
+            program_counter++;
         }
-        printf("Intruction %d\nW value: %b\n0x21 Register value: %b\nStatus: %b\n\n", i, w.value, data_memory[0][0x21].value, sfr_status.value);
+        printf("Instruction %d\nW value: %b\n0x21 Register value: %b\nStatus: %b\n\n", i, w.value, data_memory[0][0x21].value, sfr_status.value);
     }
 }
 
